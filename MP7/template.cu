@@ -10,10 +10,22 @@
     }                                                                     \
   } while (0)
 
+#define TILE_WIDTH 1024
+
 __global__ void spmvJDSKernel(float *out, int *matColStart, int *matCols,
                               int *matRowPerm, int *matRows,
                               float *matData, float *vec, int dim) {
   //@@ insert spmv kernel for jds format
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < dim) {
+      float product = 0;
+      unsigned int section = 0;
+      while (section < matRows[idx]) {
+          product += matData[matColStart[section] + idx] * vec[matCols[matColStart[section] + idx]];
+          section++;
+      }
+      out[matRowPerm[idx]] = product;
+  }
 }
 
 static void spmvJDS(float *out, int *matColStart, int *matCols,
@@ -21,6 +33,7 @@ static void spmvJDS(float *out, int *matColStart, int *matCols,
                     float *vec, int dim) {
 
   //@@ invoke spmv kernel for jds format
+  spmvJDSKernel<<<ceil(dim/(float)TILE_WIDTH), TILE_WIDTH>>>(out, matColStart, matCols, matRowPerm, matRows, matData, vec, dim);
 }
 
 int main(int argc, char **argv) {

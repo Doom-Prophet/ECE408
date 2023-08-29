@@ -11,12 +11,49 @@
   } while (0)
 
 //@@ Define any useful program-wide constants here
+#define MASK_WIDTH 3
+#define TILE_WIDTH 8
+#define BLOCK_WIDTH (TILE_WIDTH + MASK_WIDTH - 1)
 
 //@@ Define constant memory for device kernel here
+__constant__ float M[MASK_WIDTH][MASK_WIDTH][MASK_WIDTH];
 
 __global__ void conv3d(float *input, float *output, const int z_size,
                        const int y_size, const int x_size) {
   //@@ Insert kernel code here
+  int x_out = blockIdx.x * TILE_WIDTH + threadIdx.x;
+  int y_out = blockIdx.y * TILE_WIDTH + threadIdx.y;
+  int z_out = blockIdx.z * TILE_WIDTH + threadIdx.z;
+
+  int x_in = x_out - 1;  // 1 = MASK_WIDTH/2
+  int y_in = y_out - 1;
+  int z_in = z_out - 1;
+
+  __shared__ float input_matrix[BLOCK_WIDTH][BLOCK_WIDTH][BLOCK_WIDTH];
+
+  if((x_in >= 0)&&(x_in < x_size)&&(y_in >= 0)&&(y_in < y_size)&&(z_in >= 0)&&(z_in < z_size)){
+    input_matrix[threadIdx.z][threadIdx.y][threadIdx.x] = input[z_in*y_size*x_size + y_in*x_size + x_in];
+  }
+  else{
+    input_matrix[threadIdx.z][threadIdx.y][threadIdx.x] = 0.0f;
+  }
+
+  __syncthreads();
+
+  if((threadIdx.x < TILE_WIDTH)&&(threadIdx.y < TILE_WIDTH)&&(threadIdx.z < TILE_WIDTH)){
+    float temp = 0.0f;
+    for(int i = 0;i < MASK_WIDTH; i++){
+      for(int j = 0;j < MASK_WIDTH; j++){
+        for(int k = 0;k < MASK_WIDTH; k++){
+          temp += input_matrix[threadIdx.z+i][threadIdx.y+j][threadIdx.x+k] * M[i][j][k];
+        }
+      }
+    }
+
+    if((x_out < x_size)&&(y_out < y_size)&&(z_out < z_size)){
+        output[z_out*y_size*x_size + y_out*x_size + x_out] = temp;
+    }
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -53,19 +90,28 @@ int main(int argc, char *argv[]) {
   //@@ Allocate GPU memory here
   // Recall that inputLength is 3 elements longer than the input data
   // because the first  three elements were the dimensions
+  cudaMalloc((void**) &deviceInput, x_size * y_size * z_size * sizeof(float));
+  cudaMalloc((void**) &deviceOutput, x_size * y_size * z_size * sizeof(float));
+
   wbTime_stop(GPU, "Doing GPU memory allocation");
 
   wbTime_start(Copy, "Copying data to the GPU");
   //@@ Copy input and kernel to GPU here
   // Recall that the first three elements of hostInput are dimensions and
-  // do
-  // not need to be copied to the gpu
+  // do not need to be copied to the gpu
+  cudaMemcpy(deviceInput, &hostInput[3], x_size * y_size * z_size * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpyToSymbol(M, hostKernel, MASK_WIDTH * MASK_WIDTH * MASK_WIDTH * sizeof(float));
+
   wbTime_stop(Copy, "Copying data to the GPU");
 
   wbTime_start(Compute, "Doing the computation on the GPU");
   //@@ Initialize grid and block dimensions here
+  dim3 DimGrid(ceil(((float)x_size)/TILE_WIDTH),ceil(((float)y_size)/TILE_WIDTH),ceil(((float)z_size)/TILE_WIDTH));
+  dim3 DimBlock(BLOCK_WIDTH,BLOCK_WIDTH,BLOCK_WIDTH);
 
   //@@ Launch the GPU kernel here
+  conv3d<<<DimGrid,DimBlock>>>(deviceInput,deviceOutput,z_size,y_size,x_size);
+
   cudaDeviceSynchronize();
   wbTime_stop(Compute, "Doing the computation on the GPU");
 
@@ -73,6 +119,8 @@ int main(int argc, char *argv[]) {
   //@@ Copy the device memory back to the host here
   // Recall that the first three elements of the output are the dimensions
   // and should not be set here (they are set below)
+  cudaMemcpy(&hostOutput[3], deviceOutput, z_size * y_size * x_size * sizeof(float), cudaMemcpyDeviceToHost);
+
   wbTime_stop(Copy, "Copying data from the GPU");
 
   wbTime_stop(GPU, "Doing GPU Computation (memory + compute)");
